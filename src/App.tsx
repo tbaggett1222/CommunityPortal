@@ -1,17 +1,53 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { FormEvent } from 'react'
+import type { FormEvent, ReactNode } from 'react'
 import './App.css'
 
-const MOBILE_BREAKPOINT_PX = 960
-const PORTAL_STATE_STORAGE_KEY = 'communityportal.portal-state.v1'
-const API_BASE_URL_STORAGE_KEY = 'communityportal.api-base-url.v1'
+const MOBILE_BREAKPOINT_PX = 920
+const MIN_LOGIN_SECRET_LENGTH = 8
+const DEFAULT_TOTAL_LOTS = 200
+const MAX_TOTAL_LOTS = 500
+const MIN_TOTAL_LOTS = 1
 const BACKUP_TYPE = 'communityportal-sync-backup'
 const BACKUP_VERSION = 1
+const ADMIN_ALLOWED_USERS = ['Tracy Baggett']
 
-type UserRole = 'resident' | 'admin'
-type PageId = 'overview' | 'announcements' | 'documents' | 'comments' | 'join' | 'admin'
-type AnnouncementAudience = 'all' | 'board'
+const STORAGE_KEYS = {
+  user: 'fw_user',
+  announcements: 'fw_announcements',
+  documents: 'fw_documents',
+  comments: 'fw_comments',
+  voteLedger: 'fw_vote_ledger',
+  totalLots: 'fw_total_lots',
+  apiBaseUrl: 'fw_db_api_base_url',
+}
+
+type AccessRole = 'primary' | 'commentOnly'
+type PageId =
+  | 'home'
+  | 'documents'
+  | 'comparison'
+  | 'proposed'
+  | 'risks'
+  | 'str'
+  | 'profile'
+  | 'comments'
+  | 'dashboard'
+  | 'admin-votes'
+  | 'admin-docs'
 type SyncMode = 'replace' | 'merge' | 'missing'
+type VoteChoice = 'eliminate' | 'permit' | 'undecided'
+type CommentTopic = 'str' | 'acc' | 'general' | 'process'
+type CommentStance = 'support' | 'oppose' | 'neutral'
+type AnnouncementAudience = 'all' | 'board'
+
+interface PortalUser {
+  name: string
+  lot: string
+  lots: string[]
+  isAdmin: boolean
+  accessRole: AccessRole
+  loginSecret: string
+}
 
 interface Announcement {
   id: string
@@ -29,43 +65,56 @@ interface PortalDocument {
   href: string
 }
 
-interface CommentEntry {
+interface CommunityComment {
   id: string
-  author: string
+  lot: string
+  name: string
+  topic: CommentTopic
+  stance: CommentStance
+  concern: string
   message: string
-  createdAt: string
-  pinned: boolean
+  ts: string
 }
 
-interface PortalSnapshot {
+interface PortalSyncPayload {
   announcements: Announcement[]
   documents: PortalDocument[]
-  comments: CommentEntry[]
+  comments: CommunityComment[]
 }
 
-interface PortalBackup {
-  backupType: string
-  version: number
-  exportedAt: string
-  payload: PortalSnapshot
+interface NavItem {
+  id: PageId
+  label: string
+  adminOnly?: boolean
+  residentOnly?: boolean
 }
 
-const NAV_ITEMS: Array<{ id: PageId; label: string; adminOnly?: boolean }> = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'announcements', label: 'Announcements' },
-  { id: 'documents', label: 'Documents' },
-  { id: 'comments', label: 'Comments' },
-  { id: 'join', label: 'Get Involved' },
-  { id: 'admin', label: 'Admin Center', adminOnly: true },
+const NAV_ITEMS: NavItem[] = [
+  { id: 'home', label: 'Overview' },
+  { id: 'documents', label: 'CC&R Documents' },
+  { id: 'comparison', label: 'Side-by-side compare' },
+  { id: 'proposed', label: 'Proposed One CC&R' },
+  { id: 'risks', label: 'Risks of inaction' },
+  { id: 'str', label: 'STR vote' },
+  { id: 'profile', label: 'My profile', residentOnly: true },
+  { id: 'comments', label: 'Community comments' },
+  { id: 'dashboard', label: 'Campaign dashboard' },
+  { id: 'admin-votes', label: 'Admin voting roster', adminOnly: true },
+  { id: 'admin-docs', label: 'Admin document tools', adminOnly: true },
 ]
 
 const PAGE_TITLES: Record<PageId, string> = {
-  overview: 'Community Overview',
-  announcements: 'Community Announcements',
-  documents: 'Resident Documents',
-  comments: 'Community Comments',
-  join: 'Get Involved',
-  admin: 'Admin Center',
+  home: 'Overview',
+  documents: 'CC&R Documents',
+  comparison: 'Side-by-side comparison',
+  proposed: 'Proposed One Community CC&R',
+  risks: 'Risks of inaction',
+  str: 'Short-Term Rental vote',
+  profile: 'Resident profile',
+  comments: 'Community comments',
+  dashboard: 'Campaign dashboard',
+  'admin-votes': 'Admin voting roster',
+  'admin-docs': 'Admin document tools',
 }
 
 const SYNC_MODE_OPTIONS: Array<{ value: SyncMode; label: string }> = [
@@ -74,82 +123,168 @@ const SYNC_MODE_OPTIONS: Array<{ value: SyncMode; label: string }> = [
   { value: 'missing', label: 'Fill local missing only' },
 ]
 
-const INITIAL_ANNOUNCEMENTS: Announcement[] = [
+const TOPIC_LABELS: Record<CommentTopic, string> = {
+  str: 'Short-term rentals',
+  acc: 'ACC guidelines',
+  general: 'General covenants',
+  process: 'Process and voting',
+}
+
+const STANCE_LABELS: Record<CommentStance, string> = {
+  support: 'Supports',
+  oppose: 'Requests changes',
+  neutral: 'Question / neutral',
+}
+
+const DEFAULT_ANNOUNCEMENTS: Announcement[] = [
   {
-    id: 'a1',
-    title: 'September board session',
-    summary: 'Board meeting agenda and packet are now posted for resident review.',
-    date: '2026-09-08',
+    id: 'ann-1',
+    title: 'One-community framework rollout',
+    summary: 'CommunityPortal now follows the same framework baseline used in the covenant platform.',
+    date: '2026-08-28',
     audience: 'all',
   },
   {
-    id: 'a2',
-    title: 'Landscape contract review',
-    summary: 'Board-only draft review before resident Q&A publication.',
-    date: '2026-09-14',
+    id: 'ann-2',
+    title: 'Board prep packet review',
+    summary: 'Admin reviewers can validate policy packet wording before resident publication.',
+    date: '2026-08-29',
     audience: 'board',
   },
 ]
 
-const INITIAL_DOCUMENTS: PortalDocument[] = [
+const DEFAULT_DOCUMENTS: PortalDocument[] = [
   {
-    id: 'd1',
-    title: 'Community Covenant Summary',
-    category: 'Governing docs',
+    id: 'doc-2008',
+    title: '2008 Master Declaration of CC&Rs',
+    category: 'Original',
     updatedAt: '2026-08-20',
     href: '#',
   },
   {
-    id: 'd2',
-    title: 'Board Meeting Minutes - August',
-    category: 'Meeting minutes',
-    updatedAt: '2026-08-29',
+    id: 'doc-2014',
+    title: '2014 Declaration of Covenants',
+    category: 'Phase II active',
+    updatedAt: '2026-08-20',
     href: '#',
   },
   {
-    id: 'd3',
-    title: 'Resident Newcomer Guide',
-    category: 'Resident onboarding',
-    updatedAt: '2026-08-16',
+    id: 'doc-2021',
+    title: '2021 Consolidated Declaration',
+    category: 'Disputed',
+    updatedAt: '2026-08-20',
     href: '#',
   },
 ]
 
-const INITIAL_COMMENTS: CommentEntry[] = [
+const DEFAULT_COMMENTS: CommunityComment[] = [
   {
-    id: 'c1',
-    author: 'Lot 36 Resident',
-    message: 'Would love to see a shared events calendar with volunteer signup links.',
-    createdAt: '2026-08-27T10:15:00.000Z',
-    pinned: true,
-  },
-  {
-    id: 'c2',
-    author: 'Board Secretary',
-    message: 'Document archive structure looks good. Next step: map categories to permissions.',
-    createdAt: '2026-08-27T14:05:00.000Z',
-    pinned: false,
+    id: 'comment-1',
+    lot: 'Lot 36',
+    name: 'Community Member',
+    topic: 'str',
+    stance: 'support',
+    concern: 'Traffic and parking pressure',
+    message: 'I support one clear standard for STR policy across all lots.',
+    ts: 'Aug 28, 2026',
   },
 ]
 
-const DEFAULT_SNAPSHOT: PortalSnapshot = {
-  announcements: INITIAL_ANNOUNCEMENTS,
-  documents: INITIAL_DOCUMENTS,
-  comments: INITIAL_COMMENTS,
+const COMPARISON_ROWS = [
+  {
+    topic: 'STR policy',
+    c2008: 'Not addressed',
+    c2014: 'Not addressed',
+    c2021: 'Restrictions disputed by consent-only process',
+    guidance: 'Adopt one ratified section across all lots',
+  },
+  {
+    topic: 'ACC standards',
+    c2008: 'Limited detail',
+    c2014: 'No ACC section',
+    c2021: 'Expanded ACC governance language',
+    guidance: 'Keep enforceable minimum standards + clear review path',
+  },
+  {
+    topic: 'Lake & wetlands',
+    c2008: 'Comprehensive',
+    c2014: 'Not addressed',
+    c2021: 'Comprehensive updates',
+    guidance: 'Retain protections and unify wording',
+  },
+]
+
+function createId(prefix: string) {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `${prefix}-${crypto.randomUUID()}`
+  }
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
-function createId() {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID()
+function readStored<T>(key: string, fallback: T): T {
+  if (typeof window === 'undefined') {
+    return fallback
   }
-  return `${Date.now()}-${Math.random().toString(16).slice(2)}`
+  const raw = window.localStorage.getItem(key)
+  if (!raw) {
+    return fallback
+  }
+  try {
+    return JSON.parse(raw) as T
+  } catch {
+    return fallback
+  }
+}
+
+function parseLotsInput(rawLots: string) {
+  const parts = rawLots
+    .split(/[,\n]/)
+    .map((value) => normalizeLotLabel(value))
+    .filter((value): value is string => Boolean(value))
+  return [...new Set(parts)]
+}
+
+function normalizeLotLabel(value: string) {
+  const trimmed = String(value || '').trim()
+  if (!trimmed) return null
+  if (trimmed.toLowerCase() === 'admin') return 'ADMIN'
+  const token = trimmed.replace(/^lot\s*/i, '').replace(/\s+/g, '').toUpperCase()
+  if (!token) return null
+  return `Lot ${token}`
+}
+
+function isAdminName(name: string) {
+  const normalized = name.trim().toLowerCase()
+  return ADMIN_ALLOWED_USERS.some((entry) => entry.toLowerCase() === normalized)
+}
+
+function buildLotLabels(totalLots: number) {
+  const count = Math.max(MIN_TOTAL_LOTS, Math.min(MAX_TOTAL_LOTS, Number(totalLots) || DEFAULT_TOTAL_LOTS))
+  return Array.from({ length: count }, (_, idx) => `Lot ${idx + 1}`)
+}
+
+function formatDate(input: string) {
+  const parsed = new Date(input)
+  if (Number.isNaN(parsed.getTime())) {
+    return input
+  }
+  return parsed.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+function computeVoteCounts(ledger: Record<string, VoteChoice>) {
+  return Object.values(ledger).reduce(
+    (acc, choice) => {
+      if (choice === 'eliminate') acc.eliminate += 1
+      if (choice === 'permit') acc.permit += 1
+      if (choice === 'undecided') acc.undecided += 1
+      return acc
+    },
+    { eliminate: 0, permit: 0, undecided: 0 },
+  )
 }
 
 function sanitizeAnnouncement(value: unknown): Announcement | null {
-  if (!value || typeof value !== 'object') {
-    return null
-  }
-
+  if (!value || typeof value !== 'object') return null
   const row = value as Partial<Announcement>
   if (
     typeof row.id !== 'string' ||
@@ -159,22 +294,17 @@ function sanitizeAnnouncement(value: unknown): Announcement | null {
   ) {
     return null
   }
-
-  const audience = row.audience === 'board' ? 'board' : 'all'
   return {
     id: row.id,
     title: row.title,
     summary: row.summary,
     date: row.date,
-    audience,
+    audience: row.audience === 'board' ? 'board' : 'all',
   }
 }
 
 function sanitizeDocument(value: unknown): PortalDocument | null {
-  if (!value || typeof value !== 'object') {
-    return null
-  }
-
+  if (!value || typeof value !== 'object') return null
   const row = value as Partial<PortalDocument>
   if (
     typeof row.id !== 'string' ||
@@ -185,7 +315,6 @@ function sanitizeDocument(value: unknown): PortalDocument | null {
   ) {
     return null
   }
-
   return {
     id: row.id,
     title: row.title,
@@ -195,289 +324,258 @@ function sanitizeDocument(value: unknown): PortalDocument | null {
   }
 }
 
-function sanitizeComment(value: unknown): CommentEntry | null {
-  if (!value || typeof value !== 'object') {
-    return null
-  }
-
-  const row = value as Partial<CommentEntry>
+function sanitizeComment(value: unknown): CommunityComment | null {
+  if (!value || typeof value !== 'object') return null
+  const row = value as Partial<CommunityComment>
   if (
     typeof row.id !== 'string' ||
-    typeof row.author !== 'string' ||
+    typeof row.lot !== 'string' ||
+    typeof row.name !== 'string' ||
+    typeof row.concern !== 'string' ||
     typeof row.message !== 'string' ||
-    typeof row.createdAt !== 'string' ||
-    typeof row.pinned !== 'boolean'
+    typeof row.ts !== 'string'
   ) {
     return null
   }
-
   return {
     id: row.id,
-    author: row.author,
+    lot: row.lot,
+    name: row.name,
+    topic: row.topic === 'acc' || row.topic === 'process' || row.topic === 'str' ? row.topic : 'general',
+    stance: row.stance === 'oppose' || row.stance === 'support' ? row.stance : 'neutral',
+    concern: row.concern,
     message: row.message,
-    createdAt: row.createdAt,
-    pinned: row.pinned,
+    ts: row.ts,
   }
 }
 
 function dedupeById<T extends { id: string }>(rows: T[]) {
   const byId = new Map<string, T>()
   rows.forEach((row) => {
-    if (!row.id) {
-      return
-    }
+    if (!row.id) return
     byId.set(row.id, row)
   })
   return [...byId.values()]
-}
-
-function sanitizeSnapshot(value: unknown): PortalSnapshot {
-  if (!value || typeof value !== 'object') {
-    return DEFAULT_SNAPSHOT
-  }
-
-  const raw = value as Partial<PortalSnapshot>
-  const announcements = Array.isArray(raw.announcements)
-    ? dedupeById(raw.announcements.map(sanitizeAnnouncement).filter((row): row is Announcement => Boolean(row)))
-    : DEFAULT_SNAPSHOT.announcements
-  const documents = Array.isArray(raw.documents)
-    ? dedupeById(raw.documents.map(sanitizeDocument).filter((row): row is PortalDocument => Boolean(row)))
-    : DEFAULT_SNAPSHOT.documents
-  const comments = Array.isArray(raw.comments)
-    ? dedupeById(raw.comments.map(sanitizeComment).filter((row): row is CommentEntry => Boolean(row)))
-    : DEFAULT_SNAPSHOT.comments
-
-  return { announcements, documents, comments }
-}
-
-function loadSnapshotFromLocalStorage() {
-  if (typeof window === 'undefined') {
-    return DEFAULT_SNAPSHOT
-  }
-
-  const raw = window.localStorage.getItem(PORTAL_STATE_STORAGE_KEY)
-  if (!raw) {
-    return DEFAULT_SNAPSHOT
-  }
-
-  try {
-    return sanitizeSnapshot(JSON.parse(raw))
-  } catch {
-    return DEFAULT_SNAPSHOT
-  }
-}
-
-function loadApiBaseUrl() {
-  if (typeof window === 'undefined') {
-    return ''
-  }
-  return window.localStorage.getItem(API_BASE_URL_STORAGE_KEY) || ''
-}
-
-function normalizeApiBaseUrl(baseUrl: string) {
-  return baseUrl.trim().replace(/\/+$/, '')
-}
-
-function buildApiUrl(baseUrl: string, path: string) {
-  const suffix = path.startsWith('/') ? path : `/${path}`
-  const base = normalizeApiBaseUrl(baseUrl)
-  return base ? `${base}${suffix}` : suffix
-}
-
-function createBackup(snapshot: PortalSnapshot): PortalBackup {
-  return {
-    backupType: BACKUP_TYPE,
-    version: BACKUP_VERSION,
-    exportedAt: new Date().toISOString(),
-    payload: snapshot,
-  }
 }
 
 function mergeByMode<T extends { id: string }>(localRows: T[], incomingRows: T[], mode: SyncMode) {
   if (mode === 'replace') {
     return dedupeById(incomingRows)
   }
-
-  const merged = new Map<string, T>()
-  localRows.forEach((row) => merged.set(row.id, row))
-
+  const byId = new Map(localRows.map((row) => [row.id, row]))
   if (mode === 'merge') {
-    incomingRows.forEach((row) => merged.set(row.id, row))
+    incomingRows.forEach((row) => byId.set(row.id, row))
   } else {
     incomingRows.forEach((row) => {
-      if (!merged.has(row.id)) {
-        merged.set(row.id, row)
-      }
+      if (!byId.has(row.id)) byId.set(row.id, row)
     })
   }
-
-  return [...merged.values()]
+  return [...byId.values()]
 }
 
-function mergeSnapshots(localSnapshot: PortalSnapshot, incomingSnapshot: PortalSnapshot, mode: SyncMode): PortalSnapshot {
-  return {
-    announcements: mergeByMode(localSnapshot.announcements, incomingSnapshot.announcements, mode),
-    documents: mergeByMode(localSnapshot.documents, incomingSnapshot.documents, mode),
-    comments: mergeByMode(localSnapshot.comments, incomingSnapshot.comments, mode),
-  }
+function buildApiUrl(baseUrl: string, path: string) {
+  const normalized = baseUrl.trim().replace(/\/+$/, '')
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`
+  return normalized ? `${normalized}${normalizedPath}` : normalizedPath
 }
 
-async function requestApiJson<T>(baseUrl: string, endpoint: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(buildApiUrl(baseUrl, endpoint), {
+async function requestApiJson<T>(baseUrl: string, path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(buildApiUrl(baseUrl, path), {
     ...init,
     headers: {
       'Content-Type': 'application/json',
       ...(init?.headers || {}),
     },
   })
-
-  let json: unknown = null
-  try {
-    json = await response.json()
-  } catch {
-    throw new Error(`Server returned a non-JSON response (${response.status}).`)
-  }
-
+  const json = (await response.json()) as { error?: string }
   if (!response.ok) {
-    const errorMessage =
-      typeof (json as { error?: unknown })?.error === 'string'
-        ? (json as { error: string }).error
-        : `Request failed (${response.status}).`
-    throw new Error(errorMessage)
+    throw new Error(json.error || `Request failed (${response.status})`)
   }
-
   return json as T
 }
 
 function App() {
-  const [role, setRole] = useState<UserRole>('resident')
-  const [page, setPage] = useState<PageId>('overview')
+  const [user, setUser] = useState<PortalUser | null>(() => readStored<PortalUser | null>(STORAGE_KEYS.user, null))
+  const [page, setPage] = useState<PageId>('home')
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [viewportWidth, setViewportWidth] = useState<number>(() =>
     typeof window === 'undefined' ? 1280 : window.innerWidth,
   )
-  const [snapshot, setSnapshot] = useState<PortalSnapshot>(loadSnapshotFromLocalStorage)
-  const [apiBaseUrl, setApiBaseUrl] = useState(loadApiBaseUrl)
+  const [totalLots, setTotalLots] = useState<number>(() => readStored<number>(STORAGE_KEYS.totalLots, DEFAULT_TOTAL_LOTS))
+  const [voteLedger, setVoteLedger] = useState<Record<string, VoteChoice>>(() =>
+    readStored<Record<string, VoteChoice>>(STORAGE_KEYS.voteLedger, {}),
+  )
+  const [announcements, setAnnouncements] = useState<Announcement[]>(() =>
+    readStored<Announcement[]>(STORAGE_KEYS.announcements, DEFAULT_ANNOUNCEMENTS),
+  )
+  const [documents, setDocuments] = useState<PortalDocument[]>(() =>
+    readStored<PortalDocument[]>(STORAGE_KEYS.documents, DEFAULT_DOCUMENTS),
+  )
+  const [comments, setComments] = useState<CommunityComment[]>(() =>
+    readStored<CommunityComment[]>(STORAGE_KEYS.comments, DEFAULT_COMMENTS),
+  )
+
+  const [apiBaseUrl, setApiBaseUrl] = useState(() => readStored<string>(STORAGE_KEYS.apiBaseUrl, ''))
   const [syncMode, setSyncMode] = useState<SyncMode>('merge')
   const [syncBusy, setSyncBusy] = useState(false)
-  const [syncMessage, setSyncMessage] = useState('')
   const [syncError, setSyncError] = useState('')
-  const [lastSyncAt, setLastSyncAt] = useState<string | null>(null)
-
-  const { announcements, documents, comments } = snapshot
+  const [syncMessage, setSyncMessage] = useState('')
+  const [voteMessage, setVoteMessage] = useState('')
 
   useEffect(() => {
-    if (typeof window === 'undefined') {
-      return
-    }
-
-    const updateViewport = () => setViewportWidth(window.innerWidth)
-    updateViewport()
-    window.addEventListener('resize', updateViewport)
-
-    return () => window.removeEventListener('resize', updateViewport)
+    if (typeof window === 'undefined') return
+    const onResize = () => setViewportWidth(window.innerWidth)
+    onResize()
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
   }, [])
 
   useEffect(() => {
-    if (typeof window === 'undefined') {
-      return
-    }
-    window.localStorage.setItem(PORTAL_STATE_STORAGE_KEY, JSON.stringify(snapshot))
-  }, [snapshot])
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(STORAGE_KEYS.user, JSON.stringify(user))
+  }, [user])
 
   useEffect(() => {
-    if (typeof window === 'undefined') {
-      return
-    }
-    window.localStorage.setItem(API_BASE_URL_STORAGE_KEY, apiBaseUrl)
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(STORAGE_KEYS.totalLots, JSON.stringify(totalLots))
+  }, [totalLots])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(STORAGE_KEYS.voteLedger, JSON.stringify(voteLedger))
+  }, [voteLedger])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(STORAGE_KEYS.announcements, JSON.stringify(announcements))
+  }, [announcements])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(STORAGE_KEYS.documents, JSON.stringify(documents))
+  }, [documents])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(STORAGE_KEYS.comments, JSON.stringify(comments))
+  }, [comments])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(STORAGE_KEYS.apiBaseUrl, apiBaseUrl)
   }, [apiBaseUrl])
 
   const isMobile = viewportWidth <= MOBILE_BREAKPOINT_PX
-  const effectivePage = role === 'resident' && page === 'admin' ? 'overview' : page
+  const allLots = useMemo(() => buildLotLabels(totalLots), [totalLots])
+  const votes = useMemo(() => computeVoteCounts(voteLedger), [voteLedger])
+  const votedLots = useMemo(() => Object.keys(voteLedger).length, [voteLedger])
+  const votesNeeded = useMemo(() => Math.ceil(totalLots * 0.67), [totalLots])
 
-  const visibleNavItems = useMemo(() => {
-    return NAV_ITEMS.filter((item) => !item.adminOnly || role === 'admin')
-  }, [role])
-
-  const visibleAnnouncements = useMemo(() => {
-    return announcements.filter((announcement) => role === 'admin' || announcement.audience === 'all')
-  }, [announcements, role])
+  const visibleAnnouncements = useMemo(
+    () => announcements.filter((announcement) => user?.isAdmin || announcement.audience === 'all'),
+    [announcements, user?.isAdmin],
+  )
 
   const sortedComments = useMemo(() => {
     return [...comments].sort((a, b) => {
-      if (a.pinned !== b.pinned) {
-        return a.pinned ? -1 : 1
-      }
-      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      const left = new Date(a.ts).getTime()
+      const right = new Date(b.ts).getTime()
+      if (!Number.isNaN(left) && !Number.isNaN(right)) return right - left
+      return b.ts.localeCompare(a.ts)
     })
   }, [comments])
 
-  const navigateTo = (nextPage: PageId) => {
-    setPage(nextPage)
-    setMobileNavOpen(false)
-  }
+  const visibleNavItems = useMemo(() => {
+    return NAV_ITEMS.filter((item) => {
+      if (item.adminOnly && !user?.isAdmin) return false
+      if (item.residentOnly && user?.isAdmin) return false
+      return true
+    })
+  }, [user?.isAdmin])
 
-  const handleRoleChange = (nextRole: UserRole) => {
-    setRole(nextRole)
-    if (nextRole === 'resident' && page === 'admin') {
-      setPage('overview')
+  const safePage = useMemo<PageId>(() => {
+    if (page === 'admin-votes' || page === 'admin-docs') {
+      return user?.isAdmin ? page : 'home'
     }
+    if (page === 'profile') {
+      return user?.isAdmin ? 'home' : page
+    }
+    return page
+  }, [page, user?.isAdmin])
+
+  if (!user) {
+    return <LoginScreen onLogin={setUser} />
   }
 
-  const handleAddAnnouncement = (input: { title: string; summary: string; audience: AnnouncementAudience }) => {
+  const handleLogout = () => {
+    setUser(null)
+    setPage('home')
+  }
+
+  const handleVote = (choice: VoteChoice) => {
+    if (user.isAdmin) {
+      setVoteMessage('Admins are read-only for resident vote casting.')
+      return
+    }
+    if (user.accessRole !== 'primary') {
+      setVoteMessage('Comment-only access cannot cast votes.')
+      return
+    }
+    const next = { ...voteLedger }
+    user.lots.forEach((lot) => {
+      next[lot] = choice
+    })
+    setVoteLedger(next)
+    setVoteMessage(`Recorded "${choice}" for ${user.lots.join(', ')}.`)
+  }
+
+  const handleAddAnnouncement = (payload: { title: string; summary: string; audience: AnnouncementAudience }) => {
     const next: Announcement = {
-      id: createId(),
-      title: input.title,
-      summary: input.summary,
-      audience: input.audience,
+      id: createId('announcement'),
+      title: payload.title,
+      summary: payload.summary,
+      audience: payload.audience,
       date: new Date().toISOString().slice(0, 10),
     }
-    setSnapshot((current) => ({ ...current, announcements: [next, ...current.announcements] }))
+    setAnnouncements((current) => [next, ...current])
   }
 
-  const handleAddDocument = (input: { title: string; category: string; href: string }) => {
+  const handleAddDocument = (payload: { title: string; category: string; href: string }) => {
     const next: PortalDocument = {
-      id: createId(),
-      title: input.title,
-      category: input.category,
-      href: input.href,
+      id: createId('document'),
+      title: payload.title,
+      category: payload.category,
+      href: payload.href,
       updatedAt: new Date().toISOString().slice(0, 10),
     }
-    setSnapshot((current) => ({ ...current, documents: [next, ...current.documents] }))
+    setDocuments((current) => [next, ...current])
   }
 
-  const handleAddComment = (input: { author: string; message: string }) => {
-    const next: CommentEntry = {
-      id: createId(),
-      author: input.author,
-      message: input.message,
-      pinned: false,
-      createdAt: new Date().toISOString(),
+  const handleAddComment = (payload: { topic: CommentTopic; stance: CommentStance; concern: string; message: string }) => {
+    const next: CommunityComment = {
+      id: createId('comment'),
+      lot: user.lot,
+      name: user.name,
+      topic: payload.topic,
+      stance: payload.stance,
+      concern: payload.concern,
+      message: payload.message,
+      ts: new Date().toISOString(),
     }
-    setSnapshot((current) => ({ ...current, comments: [next, ...current.comments] }))
-  }
-
-  const handleTogglePinComment = (id: string) => {
-    setSnapshot((current) => ({
-      ...current,
-      comments: current.comments.map((comment) => (comment.id === id ? { ...comment, pinned: !comment.pinned } : comment)),
-    }))
+    setComments((current) => [next, ...current])
   }
 
   const handleDeleteComment = (id: string) => {
-    setSnapshot((current) => ({ ...current, comments: current.comments.filter((comment) => comment.id !== id) }))
+    setComments((current) => current.filter((comment) => comment.id !== id))
   }
 
-  const handleTestConnection = async () => {
+  const handleSyncTest = async () => {
     setSyncBusy(true)
     setSyncError('')
     setSyncMessage('')
     try {
-      const response = await requestApiJson<{ ok: boolean; service?: string; now?: string }>(
-        apiBaseUrl,
-        '/api/portal/health',
-      )
-      setSyncMessage(`Connected to ${response.service || 'portal API'} at ${response.now || 'current time'}.`)
+      const response = await requestApiJson<{ service?: string; now?: string }>(apiBaseUrl, '/api/portal/health')
+      setSyncMessage(`Connected to ${response.service || 'portal API'} (${response.now || 'time unavailable'}).`)
     } catch (error) {
       setSyncError(error instanceof Error ? error.message : 'Connection test failed.')
     } finally {
@@ -485,19 +583,21 @@ function App() {
     }
   }
 
-  const handleSyncToBackend = async () => {
+  const handleSyncPush = async () => {
     setSyncBusy(true)
     setSyncError('')
     setSyncMessage('')
     try {
-      const response = await requestApiJson<{
-        ok: boolean
-        message?: string
-        result?: { mode?: string; counts?: Record<string, number> }
-      }>(apiBaseUrl, '/api/portal/sync', {
+      const payload: PortalSyncPayload = { announcements, documents, comments }
+      const response = await requestApiJson<{ message?: string }>(apiBaseUrl, '/api/portal/sync', {
         method: 'POST',
         body: JSON.stringify({
-          backup: createBackup(snapshot),
+          backup: {
+            backupType: BACKUP_TYPE,
+            version: BACKUP_VERSION,
+            exportedAt: new Date().toISOString(),
+            payload,
+          },
           mode: syncMode,
           scopes: {
             announcements: true,
@@ -506,11 +606,7 @@ function App() {
           },
         }),
       })
-      const countLabel = response.result?.counts
-        ? `${response.result.counts.announcements || 0} announcements, ${response.result.counts.documents || 0} documents, ${response.result.counts.comments || 0} comments`
-        : 'portal records'
-      setSyncMessage(response.message ? `${response.message} (${countLabel}).` : `Sync completed (${countLabel}).`)
-      setLastSyncAt(new Date().toISOString())
+      setSyncMessage(response.message || 'Sync completed.')
     } catch (error) {
       setSyncError(error instanceof Error ? error.message : 'Sync failed.')
     } finally {
@@ -518,20 +614,29 @@ function App() {
     }
   }
 
-  const handlePullFromBackend = async () => {
+  const handleSyncPull = async () => {
     setSyncBusy(true)
     setSyncError('')
     setSyncMessage('')
     try {
-      const response = await requestApiJson<{ ok: boolean; backup?: { payload?: unknown } }>(apiBaseUrl, '/api/portal/export')
-      const incoming = sanitizeSnapshot(response.backup?.payload)
-      setSnapshot((current) => mergeSnapshots(current, incoming, syncMode))
-      setSyncMessage(
-        `Loaded data from backend using "${syncMode}" mode (${incoming.announcements.length} announcements, ${incoming.documents.length} documents, ${incoming.comments.length} comments received).`,
-      )
-      setLastSyncAt(new Date().toISOString())
+      const response = await requestApiJson<{ backup?: { payload?: unknown } }>(apiBaseUrl, '/api/portal/export')
+      const source = response.backup?.payload
+      const incomingAnnouncements = Array.isArray((source as PortalSyncPayload | undefined)?.announcements)
+        ? (source as PortalSyncPayload).announcements.map(sanitizeAnnouncement).filter((row): row is Announcement => Boolean(row))
+        : []
+      const incomingDocuments = Array.isArray((source as PortalSyncPayload | undefined)?.documents)
+        ? (source as PortalSyncPayload).documents.map(sanitizeDocument).filter((row): row is PortalDocument => Boolean(row))
+        : []
+      const incomingComments = Array.isArray((source as PortalSyncPayload | undefined)?.comments)
+        ? (source as PortalSyncPayload).comments.map(sanitizeComment).filter((row): row is CommunityComment => Boolean(row))
+        : []
+
+      setAnnouncements((current) => mergeByMode(current, incomingAnnouncements, syncMode))
+      setDocuments((current) => mergeByMode(current, incomingDocuments, syncMode))
+      setComments((current) => mergeByMode(current, incomingComments, syncMode))
+      setSyncMessage('Loaded backend data successfully.')
     } catch (error) {
-      setSyncError(error instanceof Error ? error.message : 'Load from backend failed.')
+      setSyncError(error instanceof Error ? error.message : 'Load failed.')
     } finally {
       setSyncBusy(false)
     }
@@ -541,7 +646,7 @@ function App() {
     <div className="portal-shell">
       {isMobile && mobileNavOpen && (
         <button
-          aria-label="Close navigation overlay"
+          aria-label="Close menu overlay"
           className="portal-overlay"
           onClick={() => setMobileNavOpen(false)}
           type="button"
@@ -551,22 +656,38 @@ function App() {
       <aside className={`portal-sidebar ${isMobile ? 'mobile' : ''} ${mobileNavOpen ? 'open' : ''}`}>
         <div className="portal-brand">
           <p className="brand-kicker">CommunityPortal</p>
-          <h1>Falling Waters One Community</h1>
-          <p>Resident communications, projects, and shared updates.</p>
+          <h1>Falling Waters</h1>
+          <p>Covenant Unification Framework</p>
         </div>
-
+        <div className="portal-user">
+          <p>
+            <strong>{user.name}</strong>
+          </p>
+          <p>{user.lot}</p>
+          <span className={`badge ${user.isAdmin ? 'admin' : 'resident'}`}>
+            {user.isAdmin ? 'Admin control mode' : `${user.accessRole === 'primary' ? 'Primary voter' : 'Comment-only'} mode`}
+          </span>
+        </div>
         <nav className="portal-nav" aria-label="Primary">
           {visibleNavItems.map((item) => (
             <button
-              className={effectivePage === item.id ? 'active' : ''}
+              className={safePage === item.id ? 'active' : ''}
               key={item.id}
-              onClick={() => navigateTo(item.id)}
+              onClick={() => {
+                setPage(item.id)
+                setMobileNavOpen(false)
+              }}
               type="button"
             >
               {item.label}
             </button>
           ))}
         </nav>
+        <div className="portal-sidebar-bottom">
+          <button className="button secondary" onClick={handleLogout} type="button">
+            Sign out
+          </button>
+        </div>
       </aside>
 
       <div className="portal-main">
@@ -582,68 +703,84 @@ function App() {
                 {mobileNavOpen ? 'Close' : 'Menu'}
               </button>
             )}
-            <h2>{PAGE_TITLES[effectivePage]}</h2>
+            <h2>{PAGE_TITLES[safePage]}</h2>
           </div>
-          <div className="topbar-controls">
-            <label htmlFor="role-select">View mode</label>
-            <select
-              id="role-select"
-              value={role}
-              onChange={(event) => handleRoleChange(event.target.value as UserRole)}
-            >
-              <option value="resident">Resident</option>
-              <option value="admin">Admin</option>
-            </select>
+          <div className="topbar-meta">
+            <span>{votes.eliminate} eliminate votes</span>
+            <span>{votesNeeded} needed ({totalLots} lots)</span>
+            {safePage !== 'str' && (
+              <button className="button" onClick={() => setPage('str')} type="button">
+                Go to STR vote
+              </button>
+            )}
           </div>
         </header>
 
         <main className="portal-content">
-          {effectivePage === 'overview' && (
-            <OverviewPage
-              announcementsCount={visibleAnnouncements.length}
-              commentsCount={comments.length}
-              documentsCount={documents.length}
-              role={role}
-            />
+          {user.isAdmin && (
+            <Alert type="warn">
+              <strong>Admin Control Mode:</strong> this view includes roster settings, sync tools, and document
+              management controls.
+            </Alert>
           )}
-          {effectivePage === 'announcements' && (
-            <AnnouncementsPage
+          {voteMessage && <Alert type="info">{voteMessage}</Alert>}
+          {safePage === 'home' && (
+            <HomePage
               announcements={visibleAnnouncements}
-              role={role}
-              onAddAnnouncement={handleAddAnnouncement}
+              commentsCount={comments.length}
+              totalLots={totalLots}
+              votedLots={votedLots}
+              votesNeeded={votesNeeded}
             />
           )}
-          {effectivePage === 'documents' && (
-            <DocumentsPage documents={documents} onAddDocument={handleAddDocument} role={role} />
+          {safePage === 'documents' && (
+            <DocumentsPage documents={documents} isAdmin={user.isAdmin} onAddDocument={handleAddDocument} />
           )}
-          {effectivePage === 'comments' && (
-            <CommentsPage
-              key={role}
-              comments={sortedComments}
-              onAddComment={handleAddComment}
-              onDeleteComment={handleDeleteComment}
-              onTogglePinComment={handleTogglePinComment}
-              role={role}
+          {safePage === 'comparison' && <ComparisonPage />}
+          {safePage === 'proposed' && <ProposedPage />}
+          {safePage === 'risks' && <RisksPage />}
+          {safePage === 'str' && (
+            <STRPage
+              user={user}
+              votes={votes}
+              votesNeeded={votesNeeded}
+              votedLots={votedLots}
+              onVote={handleVote}
             />
           )}
-          {effectivePage === 'join' && <JoinPage />}
-          {effectivePage === 'admin' && (
-            <AdminPage
-              announcements={announcements}
-              comments={comments}
-              documents={documents}
+          {safePage === 'profile' && <ProfilePage user={user} voteLedger={voteLedger} />}
+          {safePage === 'comments' && (
+            <CommentsPage comments={sortedComments} isAdmin={user.isAdmin} onAddComment={handleAddComment} onDeleteComment={handleDeleteComment} />
+          )}
+          {safePage === 'dashboard' && (
+            <DashboardPage
+              commentsCount={comments.length}
+              votes={votes}
+              totalLots={totalLots}
+              votedLots={votedLots}
+              documentsCount={documents.length}
+            />
+          )}
+          {safePage === 'admin-votes' && user.isAdmin && (
+            <AdminVotesPage
+              allLots={allLots}
               apiBaseUrl={apiBaseUrl}
+              onApiBaseUrlChange={setApiBaseUrl}
+              onLoadFromBackend={handleSyncPull}
+              onSyncModeChange={setSyncMode}
+              onSyncToBackend={handleSyncPush}
+              onTestConnection={handleSyncTest}
+              setTotalLots={setTotalLots}
               syncBusy={syncBusy}
               syncError={syncError}
               syncMessage={syncMessage}
               syncMode={syncMode}
-              lastSyncAt={lastSyncAt}
-              onApiBaseUrlChange={setApiBaseUrl}
-              onPullFromBackend={handlePullFromBackend}
-              onSyncModeChange={setSyncMode}
-              onSyncToBackend={handleSyncToBackend}
-              onTestConnection={handleTestConnection}
+              totalLots={totalLots}
+              voteLedger={voteLedger}
             />
+          )}
+          {safePage === 'admin-docs' && user.isAdmin && (
+            <AdminDocsPage announcements={announcements} onAddAnnouncement={handleAddAnnouncement} />
           )}
         </main>
       </div>
@@ -651,130 +788,152 @@ function App() {
   )
 }
 
-function OverviewPage({
-  role,
-  announcementsCount,
-  documentsCount,
+function Alert({ type, children }: { type: 'warn' | 'info'; children: ReactNode }) {
+  return <div className={`alert ${type}`}>{children}</div>
+}
+
+function LoginScreen({ onLogin }: { onLogin: (user: PortalUser) => void }) {
+  const [lot, setLot] = useState('')
+  const [name, setName] = useState('')
+  const [pw, setPw] = useState('')
+  const [accessRole, setAccessRole] = useState<AccessRole>('primary')
+  const [error, setError] = useState('')
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const trimmedName = name.trim()
+    const hasAdminAccess = isAdminName(trimmedName)
+    const parsedLots = hasAdminAccess ? ['ADMIN'] : parseLotsInput(lot)
+    if ((!hasAdminAccess && parsedLots.length === 0) || !trimmedName || pw.trim().length < MIN_LOGIN_SECRET_LENGTH) {
+      setError(
+        `Enter name, lot number(s), and password (${MIN_LOGIN_SECRET_LENGTH}+ chars). Admin users can leave lot blank.`,
+      )
+      return
+    }
+    const nextUser: PortalUser = {
+      lot: parsedLots.length === 1 ? parsedLots[0] : parsedLots.join(', '),
+      lots: parsedLots,
+      name: trimmedName,
+      accessRole: hasAdminAccess ? 'primary' : accessRole,
+      isAdmin: hasAdminAccess,
+      loginSecret: pw.trim(),
+    }
+    setError('')
+    onLogin(nextUser)
+  }
+
+  return (
+    <div className="login-screen">
+      <section className="login-card">
+        <p className="eyebrow">CommunityPortal</p>
+        <h1>Falling Waters Covenant Portal</h1>
+        <p className="muted">
+          This framework mirrors the Community Covenant Platform layout, role model, and section architecture.
+        </p>
+        {error && <Alert type="warn">{error}</Alert>}
+        <form className="form-stack" onSubmit={handleSubmit}>
+          <label className="field">
+            <span>Lot number(s)</span>
+            <input
+              onChange={(event) => setLot(event.target.value)}
+              placeholder="e.g. Lot 36, Lot 37"
+              type="text"
+              value={lot}
+            />
+          </label>
+          <label className="field">
+            <span>Your name</span>
+            <input
+              onChange={(event) => setName(event.target.value)}
+              placeholder="First and last name"
+              type="text"
+              value={name}
+            />
+          </label>
+          <label className="field">
+            <span>Password</span>
+            <input
+              onChange={(event) => setPw(event.target.value)}
+              placeholder={`Minimum ${MIN_LOGIN_SECRET_LENGTH} characters`}
+              type="password"
+              value={pw}
+            />
+          </label>
+          <label className="field">
+            <span>Access role</span>
+            <select onChange={(event) => setAccessRole(event.target.value as AccessRole)} value={accessRole}>
+              <option value="primary">Primary voter (vote + comment)</option>
+              <option value="commentOnly">Comment-only household member</option>
+            </select>
+          </label>
+          <button className="button" type="submit">
+            Enter portal
+          </button>
+        </form>
+      </section>
+    </div>
+  )
+}
+
+function HomePage({
+  announcements,
   commentsCount,
+  totalLots,
+  votedLots,
+  votesNeeded,
 }: {
-  role: UserRole
-  announcementsCount: number
-  documentsCount: number
+  announcements: Announcement[]
   commentsCount: number
+  totalLots: number
+  votedLots: number
+  votesNeeded: number
 }) {
   return (
     <>
-      <section className="card hero-card">
-        <p className="eyebrow">Welcome</p>
-        <h3>CommunityPortal module starter</h3>
-        <p>
-          Announcements, documents, and comments are active now. Admin mode can publish and moderate while resident
-          mode presents community-facing views only.
-        </p>
-        <p className="helper-text">Current mode: {role === 'admin' ? 'Admin controls enabled' : 'Resident view'}</p>
+      <section className="card">
+        <h3>One-community status snapshot</h3>
+        <div className="stat-grid">
+          <StatCard label="Total lots" value={totalLots} />
+          <StatCard label="Lots with recorded votes" value={votedLots} />
+          <StatCard label="Votes needed (67%)" value={votesNeeded} />
+          <StatCard label="Community comments" value={commentsCount} />
+        </div>
       </section>
-
-      <section className="stat-grid">
-        <article className="card stat-card">
-          <p className="stat-number">{announcementsCount}</p>
-          <p className="stat-label">Visible announcements</p>
-        </article>
-        <article className="card stat-card">
-          <p className="stat-number">{documentsCount}</p>
-          <p className="stat-label">Published documents</p>
-        </article>
-        <article className="card stat-card">
-          <p className="stat-number">{commentsCount}</p>
-          <p className="stat-label">Community comments</p>
-        </article>
+      <section className="card-list">
+        {announcements.map((announcement) => (
+          <article className="card" key={announcement.id}>
+            <div className="row-between">
+              <h3>{announcement.title}</h3>
+              <span className={`pill ${announcement.audience === 'board' ? 'gold' : 'soft'}`}>
+                {announcement.audience === 'board' ? 'Board notice' : 'Resident notice'}
+              </span>
+            </div>
+            <p>{announcement.summary}</p>
+            <p className="helper-text">Posted {formatDate(announcement.date)}</p>
+          </article>
+        ))}
       </section>
     </>
   )
 }
 
-function AnnouncementsPage({
-  role,
-  announcements,
-  onAddAnnouncement,
-}: {
-  role: UserRole
-  announcements: Announcement[]
-  onAddAnnouncement: (input: { title: string; summary: string; audience: AnnouncementAudience }) => void
-}) {
-  const [title, setTitle] = useState('')
-  const [summary, setSummary] = useState('')
-  const [audience, setAudience] = useState<AnnouncementAudience>('all')
-
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    if (!title.trim() || !summary.trim()) {
-      return
-    }
-    onAddAnnouncement({
-      title: title.trim(),
-      summary: summary.trim(),
-      audience,
-    })
-    setTitle('')
-    setSummary('')
-    setAudience('all')
-  }
-
+function StatCard({ label, value }: { label: string; value: number }) {
   return (
-    <section className="card-list">
-      {role === 'admin' && (
-        <article className="card">
-          <h3>Post announcement</h3>
-          <form className="form-stack" onSubmit={handleSubmit}>
-            <label className="field">
-              <span>Title</span>
-              <input onChange={(event) => setTitle(event.target.value)} value={title} />
-            </label>
-            <label className="field">
-              <span>Summary</span>
-              <textarea onChange={(event) => setSummary(event.target.value)} rows={3} value={summary} />
-            </label>
-            <label className="field">
-              <span>Audience</span>
-              <select
-                onChange={(event) => setAudience(event.target.value as AnnouncementAudience)}
-                value={audience}
-              >
-                <option value="all">All residents</option>
-                <option value="board">Board only</option>
-              </select>
-            </label>
-            <button className="button" type="submit">
-              Publish announcement
-            </button>
-          </form>
-        </article>
-      )}
-
-      {announcements.map((announcement) => (
-        <article className="card" key={announcement.id}>
-          <div className="row-between">
-            <h3>{announcement.title}</h3>
-            <span className={`pill ${announcement.audience === 'all' ? 'soft' : 'gold'}`}>
-              {announcement.audience === 'all' ? 'Resident notice' : 'Board notice'}
-            </span>
-          </div>
-          <p>{announcement.summary}</p>
-          <p className="helper-text">Posted {formatDate(announcement.date)}</p>
-        </article>
-      ))}
-    </section>
+    <article className="card stat-card">
+      <p className="stat-number">{value}</p>
+      <p className="stat-label">{label}</p>
+    </article>
   )
 }
 
 function DocumentsPage({
-  role,
   documents,
+  isAdmin,
   onAddDocument,
 }: {
-  role: UserRole
   documents: PortalDocument[]
-  onAddDocument: (input: { title: string; category: string; href: string }) => void
+  isAdmin: boolean
+  onAddDocument: (payload: { title: string; category: string; href: string }) => void
 }) {
   const [title, setTitle] = useState('')
   const [category, setCategory] = useState('')
@@ -782,15 +941,8 @@ function DocumentsPage({
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (!title.trim() || !category.trim() || !href.trim()) {
-      return
-    }
-
-    onAddDocument({
-      title: title.trim(),
-      category: category.trim(),
-      href: href.trim(),
-    })
+    if (!title.trim() || !category.trim() || !href.trim()) return
+    onAddDocument({ title: title.trim(), category: category.trim(), href: href.trim() })
     setTitle('')
     setCategory('')
     setHref('')
@@ -798,7 +950,7 @@ function DocumentsPage({
 
   return (
     <section className="card-list">
-      {role === 'admin' && (
+      {isAdmin && (
         <article className="card">
           <h3>Add document link</h3>
           <form className="form-stack" onSubmit={handleSubmit}>
@@ -812,11 +964,7 @@ function DocumentsPage({
             </label>
             <label className="field">
               <span>URL</span>
-              <input
-                onChange={(event) => setHref(event.target.value)}
-                placeholder="https://example.com/doc.pdf"
-                value={href}
-              />
+              <input onChange={(event) => setHref(event.target.value)} value={href} />
             </label>
             <button className="button" type="submit">
               Save document
@@ -825,14 +973,14 @@ function DocumentsPage({
         </article>
       )}
 
-      {documents.map((document) => (
-        <article className="card" key={document.id}>
+      {documents.map((doc) => (
+        <article className="card" key={doc.id}>
           <div className="row-between">
-            <h3>{document.title}</h3>
-            <span className="pill soft">{document.category}</span>
+            <h3>{doc.title}</h3>
+            <span className="pill soft">{doc.category}</span>
           </div>
-          <p className="helper-text">Updated {formatDate(document.updatedAt)}</p>
-          <a className="button secondary inline" href={document.href} rel="noreferrer" target="_blank">
+          <p className="helper-text">Updated {formatDate(doc.updatedAt)}</p>
+          <a className="button secondary inline" href={doc.href} rel="noreferrer" target="_blank">
             Open document
           </a>
         </article>
@@ -841,42 +989,196 @@ function DocumentsPage({
   )
 }
 
+function ComparisonPage() {
+  return (
+    <section className="card">
+      <h3>Document comparison highlights</h3>
+      <div className="table-wrap">
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Topic</th>
+              <th>2008</th>
+              <th>2014</th>
+              <th>2021</th>
+              <th>Unification guidance</th>
+            </tr>
+          </thead>
+          <tbody>
+            {COMPARISON_ROWS.map((row) => (
+              <tr key={row.topic}>
+                <td>{row.topic}</td>
+                <td>{row.c2008}</td>
+                <td>{row.c2014}</td>
+                <td>{row.c2021}</td>
+                <td>{row.guidance}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  )
+}
+
+function ProposedPage() {
+  return (
+    <section className="card">
+      <h3>Proposed One Community CC&R framework</h3>
+      <ol>
+        <li>Unify the currently split covenant documents into one ratified source.</li>
+        <li>Preserve core protections (lake, wetlands, community standards) across all lots.</li>
+        <li>Add clear STR + ACC sections with enforceable language and transparent governance.</li>
+      </ol>
+    </section>
+  )
+}
+
+function RisksPage() {
+  return (
+    <section className="card-list">
+      <article className="card">
+        <h3>Legal ambiguity across phases</h3>
+        <p>Different covenant texts across lots create enforceability uncertainty and owner confusion.</p>
+      </article>
+      <article className="card">
+        <h3>Operational inconsistency</h3>
+        <p>Without one framework, board decisions can appear uneven even when intent is fair.</p>
+      </article>
+      <article className="card">
+        <h3>Long-term resale and lender friction</h3>
+        <p>Undefined cross-phase policy can create avoidable diligence concerns in transactions.</p>
+      </article>
+    </section>
+  )
+}
+
+function STRPage({
+  user,
+  votes,
+  votesNeeded,
+  votedLots,
+  onVote,
+}: {
+  user: PortalUser
+  votes: { eliminate: number; permit: number; undecided: number }
+  votesNeeded: number
+  votedLots: number
+  onVote: (choice: VoteChoice) => void
+}) {
+  const canVote = !user.isAdmin && user.accessRole === 'primary'
+  return (
+    <section className="card-list">
+      <article className="card">
+        <h3>Current vote totals</h3>
+        <div className="stat-grid compact">
+          <StatCard label="Eliminate STRs" value={votes.eliminate} />
+          <StatCard label="Permit STRs" value={votes.permit} />
+          <StatCard label="Undecided" value={votes.undecided} />
+          <StatCard label="Lots with votes" value={votedLots} />
+        </div>
+        <p className="helper-text">{votesNeeded} eliminate votes are needed to pass the threshold.</p>
+      </article>
+      <article className="card">
+        <h3>Cast vote</h3>
+        {!canVote && (
+          <p className="helper-text">
+            {user.isAdmin
+              ? 'Admin accounts cannot cast resident votes.'
+              : 'Comment-only access cannot cast votes. Use primary voter access.'}
+          </p>
+        )}
+        <div className="inline-actions">
+          <button className="button" disabled={!canVote} onClick={() => onVote('eliminate')} type="button">
+            Eliminate STRs
+          </button>
+          <button className="button secondary" disabled={!canVote} onClick={() => onVote('permit')} type="button">
+            Permit STRs
+          </button>
+          <button className="button secondary" disabled={!canVote} onClick={() => onVote('undecided')} type="button">
+            Undecided
+          </button>
+        </div>
+      </article>
+    </section>
+  )
+}
+
+function ProfilePage({ user, voteLedger }: { user: PortalUser; voteLedger: Record<string, VoteChoice> }) {
+  return (
+    <section className="card">
+      <h3>Resident profile</h3>
+      <p>
+        <strong>Name:</strong> {user.name}
+      </p>
+      <p>
+        <strong>Lot(s):</strong> {user.lots.join(', ')}
+      </p>
+      <p>
+        <strong>Access role:</strong> {user.accessRole === 'primary' ? 'Primary voter' : 'Comment-only'}
+      </p>
+      <p>
+        <strong>Current vote record:</strong>{' '}
+        {user.lots.map((lot) => `${lot}: ${voteLedger[lot] || 'not set'}`).join(' · ')}
+      </p>
+    </section>
+  )
+}
+
 function CommentsPage({
-  role,
   comments,
+  isAdmin,
   onAddComment,
-  onTogglePinComment,
   onDeleteComment,
 }: {
-  role: UserRole
-  comments: CommentEntry[]
-  onAddComment: (input: { author: string; message: string }) => void
-  onTogglePinComment: (id: string) => void
+  comments: CommunityComment[]
+  isAdmin: boolean
+  onAddComment: (payload: { topic: CommentTopic; stance: CommentStance; concern: string; message: string }) => void
   onDeleteComment: (id: string) => void
 }) {
-  const [author, setAuthor] = useState(() => (role === 'admin' ? 'Board moderator' : ''))
+  const [topic, setTopic] = useState<CommentTopic>('str')
+  const [stance, setStance] = useState<CommentStance>('neutral')
+  const [concern, setConcern] = useState('')
   const [message, setMessage] = useState('')
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (!author.trim() || !message.trim()) {
-      return
-    }
+    if (!concern.trim() || !message.trim()) return
     onAddComment({
-      author: author.trim(),
+      topic,
+      stance,
+      concern: concern.trim(),
       message: message.trim(),
     })
+    setConcern('')
     setMessage('')
   }
 
   return (
     <section className="card-list">
       <article className="card">
-        <h3>Share a comment</h3>
+        <h3>Share community feedback</h3>
         <form className="form-stack" onSubmit={handleSubmit}>
           <label className="field">
-            <span>Name</span>
-            <input onChange={(event) => setAuthor(event.target.value)} value={author} />
+            <span>Topic</span>
+            <select onChange={(event) => setTopic(event.target.value as CommentTopic)} value={topic}>
+              <option value="str">Short-term rentals</option>
+              <option value="acc">ACC building guidelines</option>
+              <option value="general">General covenants</option>
+              <option value="process">Process and voting</option>
+            </select>
+          </label>
+          <label className="field">
+            <span>Position</span>
+            <select onChange={(event) => setStance(event.target.value as CommentStance)} value={stance}>
+              <option value="support">Support</option>
+              <option value="oppose">Request changes</option>
+              <option value="neutral">Question / neutral</option>
+            </select>
+          </label>
+          <label className="field">
+            <span>Primary concern</span>
+            <input onChange={(event) => setConcern(event.target.value)} value={concern} />
           </label>
           <label className="field">
             <span>Comment</span>
@@ -891,112 +1193,144 @@ function CommentsPage({
       {comments.map((comment) => (
         <article className="card" key={comment.id}>
           <div className="row-between">
-            <div>
-              <h3>{comment.author}</h3>
-              <p className="helper-text">{formatDateTime(comment.createdAt)}</p>
-            </div>
-            <div className="inline-actions">
-              {comment.pinned && <span className="pill gold">Pinned</span>}
-              {role === 'admin' && (
-                <>
-                  <button className="button secondary inline" onClick={() => onTogglePinComment(comment.id)} type="button">
-                    {comment.pinned ? 'Unpin' : 'Pin'}
-                  </button>
-                  <button className="button danger inline" onClick={() => onDeleteComment(comment.id)} type="button">
-                    Delete
-                  </button>
-                </>
-              )}
-            </div>
+            <h3>
+              {comment.lot} · {comment.name}
+            </h3>
+            <span className="pill soft">{comment.ts}</span>
           </div>
+          <p className="helper-text">
+            {TOPIC_LABELS[comment.topic]} · {STANCE_LABELS[comment.stance]} · {comment.concern}
+          </p>
           <p>{comment.message}</p>
+          {isAdmin && (
+            <div className="inline-actions">
+              <button className="button danger inline" onClick={() => onDeleteComment(comment.id)} type="button">
+                Delete
+              </button>
+            </div>
+          )}
         </article>
       ))}
     </section>
   )
 }
 
-function AdminPage({
-  announcements,
-  documents,
-  comments,
-  apiBaseUrl,
-  syncMode,
-  syncBusy,
-  syncMessage,
-  syncError,
-  lastSyncAt,
-  onApiBaseUrlChange,
-  onSyncModeChange,
-  onTestConnection,
-  onSyncToBackend,
-  onPullFromBackend,
+function DashboardPage({
+  commentsCount,
+  votes,
+  totalLots,
+  votedLots,
+  documentsCount,
 }: {
-  announcements: Announcement[]
-  documents: PortalDocument[]
-  comments: CommentEntry[]
+  commentsCount: number
+  votes: { eliminate: number; permit: number; undecided: number }
+  totalLots: number
+  votedLots: number
+  documentsCount: number
+}) {
+  const turnoutPct = totalLots > 0 ? Math.round((votedLots / totalLots) * 100) : 0
+  return (
+    <section className="card-list">
+      <article className="card">
+        <h3>Campaign metrics</h3>
+        <div className="stat-grid compact">
+          <StatCard label="Total lots" value={totalLots} />
+          <StatCard label="Voted lots" value={votedLots} />
+          <StatCard label="Turnout %" value={turnoutPct} />
+          <StatCard label="Comments" value={commentsCount} />
+          <StatCard label="Documents" value={documentsCount} />
+          <StatCard label="Eliminate votes" value={votes.eliminate} />
+        </div>
+      </article>
+      <article className="card">
+        <h3>Operational notes</h3>
+        <ol>
+          <li>Use admin roster page to adjust lot count and sync shared data.</li>
+          <li>Use admin document tools to post resident or board-only announcements.</li>
+          <li>Review comments weekly and summarize trends in board communications.</li>
+        </ol>
+      </article>
+    </section>
+  )
+}
+
+interface AdminVotesPageProps {
+  totalLots: number
+  setTotalLots: (value: number) => void
+  voteLedger: Record<string, VoteChoice>
+  allLots: string[]
   apiBaseUrl: string
+  onApiBaseUrlChange: (value: string) => void
   syncMode: SyncMode
+  onSyncModeChange: (mode: SyncMode) => void
   syncBusy: boolean
   syncMessage: string
   syncError: string
-  lastSyncAt: string | null
-  onApiBaseUrlChange: (value: string) => void
-  onSyncModeChange: (mode: SyncMode) => void
   onTestConnection: () => Promise<void>
   onSyncToBackend: () => Promise<void>
-  onPullFromBackend: () => Promise<void>
-}) {
-  const boardOnlyCount = announcements.filter((announcement) => announcement.audience === 'board').length
-  const pinnedCount = comments.filter((comment) => comment.pinned).length
+  onLoadFromBackend: () => Promise<void>
+}
+
+function AdminVotesPage({
+  totalLots,
+  setTotalLots,
+  voteLedger,
+  allLots,
+  apiBaseUrl,
+  onApiBaseUrlChange,
+  syncMode,
+  onSyncModeChange,
+  syncBusy,
+  syncMessage,
+  syncError,
+  onTestConnection,
+  onSyncToBackend,
+  onLoadFromBackend,
+}: AdminVotesPageProps) {
+  const [nextLotsInput, setNextLotsInput] = useState(String(totalLots))
+  const activeVoteRows = Object.entries(voteLedger)
+
+  const handleLotsSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const parsed = Number.parseInt(nextLotsInput, 10)
+    if (Number.isNaN(parsed)) return
+    const bounded = Math.max(MIN_TOTAL_LOTS, Math.min(MAX_TOTAL_LOTS, parsed))
+    setTotalLots(bounded)
+    setNextLotsInput(String(bounded))
+  }
 
   return (
     <section className="card-list">
       <article className="card">
-        <p className="eyebrow">Admin snapshot</p>
-        <h3>Moderation and publishing overview</h3>
-        <div className="stat-grid compact">
-          <div className="mini-stat">
-            <strong>{announcements.length}</strong>
-            <span>Total announcements</span>
-          </div>
-          <div className="mini-stat">
-            <strong>{boardOnlyCount}</strong>
-            <span>Board-only notices</span>
-          </div>
-          <div className="mini-stat">
-            <strong>{documents.length}</strong>
-            <span>Document links</span>
-          </div>
-          <div className="mini-stat">
-            <strong>{pinnedCount}</strong>
-            <span>Pinned comments</span>
-          </div>
-        </div>
+        <h3>Lot settings and roster snapshot</h3>
+        <form className="inline-form" onSubmit={handleLotsSubmit}>
+          <label className="field compact">
+            <span>Total lots</span>
+            <input onChange={(event) => setNextLotsInput(event.target.value)} value={nextLotsInput} />
+          </label>
+          <button className="button" type="submit">
+            Save lot count
+          </button>
+        </form>
+        <p className="helper-text">
+          Available lots: {allLots.length}. Recorded vote rows: {activeVoteRows.length}.
+        </p>
       </article>
 
       <article className="card">
-        <p className="eyebrow">Shared data sync</p>
-        <h3>Backend synchronization panel</h3>
-        <p className="helper-text">
-          Use a hosted API URL (or keep blank for same-origin). For local testing with the included API server, use
-          <code>http://localhost:8787</code>.
-        </p>
+        <h3>Shared data sync</h3>
         <div className="form-stack">
           <label className="field">
-            <span>Database API base URL</span>
+            <span>API base URL</span>
             <input
               onChange={(event) => onApiBaseUrlChange(event.target.value)}
-              placeholder="https://your-api-host.example.com"
+              placeholder="http://localhost:8787"
               value={apiBaseUrl}
             />
           </label>
           <label className="field">
             <span>Sync mode</span>
-            <select
-              onChange={(event) => onSyncModeChange(event.target.value as SyncMode)}
-              value={syncMode}
-            >
+            <select onChange={(event) => onSyncModeChange(event.target.value as SyncMode)} value={syncMode}>
               {SYNC_MODE_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
@@ -1009,64 +1343,80 @@ function AdminPage({
               Test connection
             </button>
             <button className="button" disabled={syncBusy} onClick={() => void onSyncToBackend()} type="button">
-              {syncBusy ? 'Working…' : 'Sync local data to backend'}
+              Sync local to backend
             </button>
-            <button className="button secondary" disabled={syncBusy} onClick={() => void onPullFromBackend()} type="button">
-              {syncBusy ? 'Working…' : 'Load data from backend'}
+            <button className="button secondary" disabled={syncBusy} onClick={() => void onLoadFromBackend()} type="button">
+              Load backend to local
             </button>
           </div>
           {syncMessage && <p className="status-message success">{syncMessage}</p>}
           {syncError && <p className="status-message error">{syncError}</p>}
-          {lastSyncAt && <p className="helper-text">Last sync action: {formatDateTime(lastSyncAt)}</p>}
         </div>
       </article>
     </section>
   )
 }
 
-function JoinPage() {
+function AdminDocsPage({
+  announcements,
+  onAddAnnouncement,
+}: {
+  announcements: Announcement[]
+  onAddAnnouncement: (payload: { title: string; summary: string; audience: AnnouncementAudience }) => void
+}) {
+  const [title, setTitle] = useState('')
+  const [summary, setSummary] = useState('')
+  const [audience, setAudience] = useState<AnnouncementAudience>('all')
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!title.trim() || !summary.trim()) return
+    onAddAnnouncement({ title: title.trim(), summary: summary.trim(), audience })
+    setTitle('')
+    setSummary('')
+    setAudience('all')
+  }
+
   return (
-    <section className="card">
-      <h3>Help shape CommunityPortal</h3>
-      <p>
-        The portal now has role-gated publishing modules plus backend sync hooks. Next passes can layer in resident
-        authentication and full PostgreSQL-powered persistence.
-      </p>
-      <ol>
-        <li>Connect login sessions and role assignment to backend records.</li>
-        <li>Add attachment upload and document metadata management.</li>
-        <li>Implement audit history for moderation and content changes.</li>
-      </ol>
+    <section className="card-list">
+      <article className="card">
+        <h3>Publish announcement</h3>
+        <form className="form-stack" onSubmit={handleSubmit}>
+          <label className="field">
+            <span>Title</span>
+            <input onChange={(event) => setTitle(event.target.value)} value={title} />
+          </label>
+          <label className="field">
+            <span>Summary</span>
+            <textarea onChange={(event) => setSummary(event.target.value)} rows={3} value={summary} />
+          </label>
+          <label className="field">
+            <span>Audience</span>
+            <select onChange={(event) => setAudience(event.target.value as AnnouncementAudience)} value={audience}>
+              <option value="all">All residents</option>
+              <option value="board">Board only</option>
+            </select>
+          </label>
+          <button className="button" type="submit">
+            Publish
+          </button>
+        </form>
+      </article>
+
+      {announcements.map((announcement) => (
+        <article className="card" key={announcement.id}>
+          <div className="row-between">
+            <h3>{announcement.title}</h3>
+            <span className={`pill ${announcement.audience === 'board' ? 'gold' : 'soft'}`}>
+              {announcement.audience === 'board' ? 'Board only' : 'All residents'}
+            </span>
+          </div>
+          <p>{announcement.summary}</p>
+          <p className="helper-text">Posted {formatDate(announcement.date)}</p>
+        </article>
+      ))}
     </section>
   )
-}
-
-function formatDate(dateValue: string) {
-  const date = new Date(dateValue)
-  if (Number.isNaN(date.getTime())) {
-    return dateValue
-  }
-
-  return date.toLocaleDateString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  })
-}
-
-function formatDateTime(dateValue: string) {
-  const date = new Date(dateValue)
-  if (Number.isNaN(date.getTime())) {
-    return dateValue
-  }
-
-  return date.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  })
 }
 
 export default App
