@@ -1,32 +1,49 @@
-# React + TypeScript + Vite
+# CommunityPortal
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+CommunityPortal is a React + Vite frontend scaffold with role-gated resident/admin modules and a lightweight sync API.
 
-Currently, two official plugins are available:
+## Frontend development
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+npm install
+npm run dev
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+## Build + lint validation
+
+```bash
+npm run build
+npm run lint
+```
+
+## Local sync API (backend pattern starter)
+
+This repository now includes a small API server based on the Community Covenant Platform sync flow.
+
+```bash
+npm run server
+```
+
+Server defaults:
+- URL: `http://localhost:8787`
+- State file: `.portal-api-state.json` in the repo root
+
+Optional environment variables:
+- `PORT` (default `8787`)
+- `PORTAL_STATE_FILE` (custom path for persisted sync state)
+- `ALLOWED_ORIGINS` (comma-separated CORS allowlist; empty allows all origins)
+
+## Sync API endpoints
+
+- `GET /api/portal/health`
+- `GET /api/portal/summary`
+- `GET /api/portal/export`
+- `POST /api/portal/sync`
+- `GET /api/portal/records/:scope`
+
+`POST /api/portal/sync` accepts:
+- `backup.payload.announcements`
+- `backup.payload.documents`
+- `backup.payload.comments`
+- `mode`: `replace`, `merge`, or `missing`
+- optional `scopes` booleans for `announcements`, `documents`, `comments`
