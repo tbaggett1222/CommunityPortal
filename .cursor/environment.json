@@ -1,0 +1,15 @@
+{
+  "name": "CommunityPortal",
+  "install": "npm ci",
+  "terminals": [
+    {
+      "name": "API server",
+      "command": "npm run server"
+    },
+    {
+      "name": "Vite dev server",
+      "command": "npm run dev"
+    }
+  ],
+  "ports": [5173, 8787]
+}
