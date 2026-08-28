@@ -1,0 +1,24 @@
+{
+  "name": "CommunityPortal",
+  "install": "npm ci",
+  "terminals": [
+    {
+      "name": "Sync API",
+      "command": "npm run server"
+    },
+    {
+      "name": "Vite dev server",
+      "command": "npm run dev"
+    }
+  ],
+  "ports": [
+    {
+      "name": "Vite dev server",
+      "port": 5173
+    },
+    {
+      "name": "Sync API",
+      "port": 8787
+    }
+  ]
+}
