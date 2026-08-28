@@ -196,6 +196,14 @@
   font-size: 0.85rem;
 }
 
+.helper-text code {
+  background: #ece8df;
+  color: #1f2937;
+  border-radius: 4px;
+  padding: 2px 6px;
+  margin-inline: 2px;
+}
+
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -346,6 +354,32 @@
   align-items: center;
   padding: 6px 10px;
   font-size: 0.8rem;
+}
+
+.sync-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.status-message {
+  border-radius: 8px;
+  border: 1px solid transparent;
+  font-size: 0.86rem;
+  margin: 0;
+  padding: 10px 12px;
+}
+
+.status-message.success {
+  background: #edf7ee;
+  border-color: #8ecf95;
+  color: #14532d;
+}
+
+.status-message.error {
+  background: #fdf0f0;
+  border-color: #ef8f8f;
+  color: #7f1d1d;
 }
 
 ol {

@@ -3,11 +3,15 @@ import type { FormEvent } from 'react'
 import './App.css'
 
 const MOBILE_BREAKPOINT_PX = 960
-const COMMENTS_STORAGE_KEY = 'communityportal.comments.v1'
+const PORTAL_STATE_STORAGE_KEY = 'communityportal.portal-state.v1'
+const API_BASE_URL_STORAGE_KEY = 'communityportal.api-base-url.v1'
+const BACKUP_TYPE = 'communityportal-sync-backup'
+const BACKUP_VERSION = 1
 
 type UserRole = 'resident' | 'admin'
 type PageId = 'overview' | 'announcements' | 'documents' | 'comments' | 'join' | 'admin'
 type AnnouncementAudience = 'all' | 'board'
+type SyncMode = 'replace' | 'merge' | 'missing'
 
 interface Announcement {
   id: string
@@ -33,6 +37,19 @@ interface CommentEntry {
   pinned: boolean
 }
 
+interface PortalSnapshot {
+  announcements: Announcement[]
+  documents: PortalDocument[]
+  comments: CommentEntry[]
+}
+
+interface PortalBackup {
+  backupType: string
+  version: number
+  exportedAt: string
+  payload: PortalSnapshot
+}
+
 const NAV_ITEMS: Array<{ id: PageId; label: string; adminOnly?: boolean }> = [
   { id: 'overview', label: 'Overview' },
   { id: 'announcements', label: 'Announcements' },
@@ -50,6 +67,12 @@ const PAGE_TITLES: Record<PageId, string> = {
   join: 'Get Involved',
   admin: 'Admin Center',
 }
+
+const SYNC_MODE_OPTIONS: Array<{ value: SyncMode; label: string }> = [
+  { value: 'replace', label: 'Replace local with remote' },
+  { value: 'merge', label: 'Merge remote into local' },
+  { value: 'missing', label: 'Fill local missing only' },
+]
 
 const INITIAL_ANNOUNCEMENTS: Announcement[] = [
   {
@@ -109,6 +132,12 @@ const INITIAL_COMMENTS: CommentEntry[] = [
   },
 ]
 
+const DEFAULT_SNAPSHOT: PortalSnapshot = {
+  announcements: INITIAL_ANNOUNCEMENTS,
+  documents: INITIAL_DOCUMENTS,
+  comments: INITIAL_COMMENTS,
+}
+
 function createId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID()
@@ -116,34 +145,208 @@ function createId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
-function loadInitialComments() {
-  if (typeof window === 'undefined') {
-    return INITIAL_COMMENTS
+function sanitizeAnnouncement(value: unknown): Announcement | null {
+  if (!value || typeof value !== 'object') {
+    return null
   }
 
-  const raw = window.localStorage.getItem(COMMENTS_STORAGE_KEY)
+  const row = value as Partial<Announcement>
+  if (
+    typeof row.id !== 'string' ||
+    typeof row.title !== 'string' ||
+    typeof row.summary !== 'string' ||
+    typeof row.date !== 'string'
+  ) {
+    return null
+  }
+
+  const audience = row.audience === 'board' ? 'board' : 'all'
+  return {
+    id: row.id,
+    title: row.title,
+    summary: row.summary,
+    date: row.date,
+    audience,
+  }
+}
+
+function sanitizeDocument(value: unknown): PortalDocument | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  const row = value as Partial<PortalDocument>
+  if (
+    typeof row.id !== 'string' ||
+    typeof row.title !== 'string' ||
+    typeof row.category !== 'string' ||
+    typeof row.updatedAt !== 'string' ||
+    typeof row.href !== 'string'
+  ) {
+    return null
+  }
+
+  return {
+    id: row.id,
+    title: row.title,
+    category: row.category,
+    updatedAt: row.updatedAt,
+    href: row.href,
+  }
+}
+
+function sanitizeComment(value: unknown): CommentEntry | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  const row = value as Partial<CommentEntry>
+  if (
+    typeof row.id !== 'string' ||
+    typeof row.author !== 'string' ||
+    typeof row.message !== 'string' ||
+    typeof row.createdAt !== 'string' ||
+    typeof row.pinned !== 'boolean'
+  ) {
+    return null
+  }
+
+  return {
+    id: row.id,
+    author: row.author,
+    message: row.message,
+    createdAt: row.createdAt,
+    pinned: row.pinned,
+  }
+}
+
+function dedupeById<T extends { id: string }>(rows: T[]) {
+  const byId = new Map<string, T>()
+  rows.forEach((row) => {
+    if (!row.id) {
+      return
+    }
+    byId.set(row.id, row)
+  })
+  return [...byId.values()]
+}
+
+function sanitizeSnapshot(value: unknown): PortalSnapshot {
+  if (!value || typeof value !== 'object') {
+    return DEFAULT_SNAPSHOT
+  }
+
+  const raw = value as Partial<PortalSnapshot>
+  const announcements = Array.isArray(raw.announcements)
+    ? dedupeById(raw.announcements.map(sanitizeAnnouncement).filter((row): row is Announcement => Boolean(row)))
+    : DEFAULT_SNAPSHOT.announcements
+  const documents = Array.isArray(raw.documents)
+    ? dedupeById(raw.documents.map(sanitizeDocument).filter((row): row is PortalDocument => Boolean(row)))
+    : DEFAULT_SNAPSHOT.documents
+  const comments = Array.isArray(raw.comments)
+    ? dedupeById(raw.comments.map(sanitizeComment).filter((row): row is CommentEntry => Boolean(row)))
+    : DEFAULT_SNAPSHOT.comments
+
+  return { announcements, documents, comments }
+}
+
+function loadSnapshotFromLocalStorage() {
+  if (typeof window === 'undefined') {
+    return DEFAULT_SNAPSHOT
+  }
+
+  const raw = window.localStorage.getItem(PORTAL_STATE_STORAGE_KEY)
   if (!raw) {
-    return INITIAL_COMMENTS
+    return DEFAULT_SNAPSHOT
   }
 
   try {
-    const parsed = JSON.parse(raw)
-    if (!Array.isArray(parsed)) {
-      return INITIAL_COMMENTS
-    }
-
-    return parsed.filter((comment): comment is CommentEntry => {
-      return (
-        typeof comment?.id === 'string' &&
-        typeof comment?.author === 'string' &&
-        typeof comment?.message === 'string' &&
-        typeof comment?.createdAt === 'string' &&
-        typeof comment?.pinned === 'boolean'
-      )
-    })
+    return sanitizeSnapshot(JSON.parse(raw))
   } catch {
-    return INITIAL_COMMENTS
+    return DEFAULT_SNAPSHOT
   }
+}
+
+function loadApiBaseUrl() {
+  if (typeof window === 'undefined') {
+    return ''
+  }
+  return window.localStorage.getItem(API_BASE_URL_STORAGE_KEY) || ''
+}
+
+function normalizeApiBaseUrl(baseUrl: string) {
+  return baseUrl.trim().replace(/\/+$/, '')
+}
+
+function buildApiUrl(baseUrl: string, path: string) {
+  const suffix = path.startsWith('/') ? path : `/${path}`
+  const base = normalizeApiBaseUrl(baseUrl)
+  return base ? `${base}${suffix}` : suffix
+}
+
+function createBackup(snapshot: PortalSnapshot): PortalBackup {
+  return {
+    backupType: BACKUP_TYPE,
+    version: BACKUP_VERSION,
+    exportedAt: new Date().toISOString(),
+    payload: snapshot,
+  }
+}
+
+function mergeByMode<T extends { id: string }>(localRows: T[], incomingRows: T[], mode: SyncMode) {
+  if (mode === 'replace') {
+    return dedupeById(incomingRows)
+  }
+
+  const merged = new Map<string, T>()
+  localRows.forEach((row) => merged.set(row.id, row))
+
+  if (mode === 'merge') {
+    incomingRows.forEach((row) => merged.set(row.id, row))
+  } else {
+    incomingRows.forEach((row) => {
+      if (!merged.has(row.id)) {
+        merged.set(row.id, row)
+      }
+    })
+  }
+
+  return [...merged.values()]
+}
+
+function mergeSnapshots(localSnapshot: PortalSnapshot, incomingSnapshot: PortalSnapshot, mode: SyncMode): PortalSnapshot {
+  return {
+    announcements: mergeByMode(localSnapshot.announcements, incomingSnapshot.announcements, mode),
+    documents: mergeByMode(localSnapshot.documents, incomingSnapshot.documents, mode),
+    comments: mergeByMode(localSnapshot.comments, incomingSnapshot.comments, mode),
+  }
+}
+
+async function requestApiJson<T>(baseUrl: string, endpoint: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(buildApiUrl(baseUrl, endpoint), {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(init?.headers || {}),
+    },
+  })
+
+  let json: unknown = null
+  try {
+    json = await response.json()
+  } catch {
+    throw new Error(`Server returned a non-JSON response (${response.status}).`)
+  }
+
+  if (!response.ok) {
+    const errorMessage =
+      typeof (json as { error?: unknown })?.error === 'string'
+        ? (json as { error: string }).error
+        : `Request failed (${response.status}).`
+    throw new Error(errorMessage)
+  }
+
+  return json as T
 }
 
 function App() {
@@ -153,9 +356,15 @@ function App() {
   const [viewportWidth, setViewportWidth] = useState<number>(() =>
     typeof window === 'undefined' ? 1280 : window.innerWidth,
   )
-  const [announcements, setAnnouncements] = useState<Announcement[]>(INITIAL_ANNOUNCEMENTS)
-  const [documents, setDocuments] = useState<PortalDocument[]>(INITIAL_DOCUMENTS)
-  const [comments, setComments] = useState<CommentEntry[]>(loadInitialComments)
+  const [snapshot, setSnapshot] = useState<PortalSnapshot>(loadSnapshotFromLocalStorage)
+  const [apiBaseUrl, setApiBaseUrl] = useState(loadApiBaseUrl)
+  const [syncMode, setSyncMode] = useState<SyncMode>('merge')
+  const [syncBusy, setSyncBusy] = useState(false)
+  const [syncMessage, setSyncMessage] = useState('')
+  const [syncError, setSyncError] = useState('')
+  const [lastSyncAt, setLastSyncAt] = useState<string | null>(null)
+
+  const { announcements, documents, comments } = snapshot
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -173,8 +382,15 @@ function App() {
     if (typeof window === 'undefined') {
       return
     }
-    window.localStorage.setItem(COMMENTS_STORAGE_KEY, JSON.stringify(comments))
-  }, [comments])
+    window.localStorage.setItem(PORTAL_STATE_STORAGE_KEY, JSON.stringify(snapshot))
+  }, [snapshot])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+    window.localStorage.setItem(API_BASE_URL_STORAGE_KEY, apiBaseUrl)
+  }, [apiBaseUrl])
 
   const isMobile = viewportWidth <= MOBILE_BREAKPOINT_PX
   const effectivePage = role === 'resident' && page === 'admin' ? 'overview' : page
@@ -216,7 +432,7 @@ function App() {
       audience: input.audience,
       date: new Date().toISOString().slice(0, 10),
     }
-    setAnnouncements((current) => [next, ...current])
+    setSnapshot((current) => ({ ...current, announcements: [next, ...current.announcements] }))
   }
 
   const handleAddDocument = (input: { title: string; category: string; href: string }) => {
@@ -227,7 +443,7 @@ function App() {
       href: input.href,
       updatedAt: new Date().toISOString().slice(0, 10),
     }
-    setDocuments((current) => [next, ...current])
+    setSnapshot((current) => ({ ...current, documents: [next, ...current.documents] }))
   }
 
   const handleAddComment = (input: { author: string; message: string }) => {
@@ -238,17 +454,87 @@ function App() {
       pinned: false,
       createdAt: new Date().toISOString(),
     }
-    setComments((current) => [next, ...current])
+    setSnapshot((current) => ({ ...current, comments: [next, ...current.comments] }))
   }
 
   const handleTogglePinComment = (id: string) => {
-    setComments((current) =>
-      current.map((comment) => (comment.id === id ? { ...comment, pinned: !comment.pinned } : comment)),
-    )
+    setSnapshot((current) => ({
+      ...current,
+      comments: current.comments.map((comment) => (comment.id === id ? { ...comment, pinned: !comment.pinned } : comment)),
+    }))
   }
 
   const handleDeleteComment = (id: string) => {
-    setComments((current) => current.filter((comment) => comment.id !== id))
+    setSnapshot((current) => ({ ...current, comments: current.comments.filter((comment) => comment.id !== id) }))
+  }
+
+  const handleTestConnection = async () => {
+    setSyncBusy(true)
+    setSyncError('')
+    setSyncMessage('')
+    try {
+      const response = await requestApiJson<{ ok: boolean; service?: string; now?: string }>(
+        apiBaseUrl,
+        '/api/portal/health',
+      )
+      setSyncMessage(`Connected to ${response.service || 'portal API'} at ${response.now || 'current time'}.`)
+    } catch (error) {
+      setSyncError(error instanceof Error ? error.message : 'Connection test failed.')
+    } finally {
+      setSyncBusy(false)
+    }
+  }
+
+  const handleSyncToBackend = async () => {
+    setSyncBusy(true)
+    setSyncError('')
+    setSyncMessage('')
+    try {
+      const response = await requestApiJson<{
+        ok: boolean
+        message?: string
+        result?: { mode?: string; counts?: Record<string, number> }
+      }>(apiBaseUrl, '/api/portal/sync', {
+        method: 'POST',
+        body: JSON.stringify({
+          backup: createBackup(snapshot),
+          mode: syncMode,
+          scopes: {
+            announcements: true,
+            documents: true,
+            comments: true,
+          },
+        }),
+      })
+      const countLabel = response.result?.counts
+        ? `${response.result.counts.announcements || 0} announcements, ${response.result.counts.documents || 0} documents, ${response.result.counts.comments || 0} comments`
+        : 'portal records'
+      setSyncMessage(response.message ? `${response.message} (${countLabel}).` : `Sync completed (${countLabel}).`)
+      setLastSyncAt(new Date().toISOString())
+    } catch (error) {
+      setSyncError(error instanceof Error ? error.message : 'Sync failed.')
+    } finally {
+      setSyncBusy(false)
+    }
+  }
+
+  const handlePullFromBackend = async () => {
+    setSyncBusy(true)
+    setSyncError('')
+    setSyncMessage('')
+    try {
+      const response = await requestApiJson<{ ok: boolean; backup?: { payload?: unknown } }>(apiBaseUrl, '/api/portal/export')
+      const incoming = sanitizeSnapshot(response.backup?.payload)
+      setSnapshot((current) => mergeSnapshots(current, incoming, syncMode))
+      setSyncMessage(
+        `Loaded data from backend using "${syncMode}" mode (${incoming.announcements.length} announcements, ${incoming.documents.length} documents, ${incoming.comments.length} comments received).`,
+      )
+      setLastSyncAt(new Date().toISOString())
+    } catch (error) {
+      setSyncError(error instanceof Error ? error.message : 'Load from backend failed.')
+    } finally {
+      setSyncBusy(false)
+    }
   }
 
   return (
@@ -341,7 +627,24 @@ function App() {
             />
           )}
           {effectivePage === 'join' && <JoinPage />}
-          {effectivePage === 'admin' && <AdminPage announcements={announcements} comments={comments} documents={documents} />}
+          {effectivePage === 'admin' && (
+            <AdminPage
+              announcements={announcements}
+              comments={comments}
+              documents={documents}
+              apiBaseUrl={apiBaseUrl}
+              syncBusy={syncBusy}
+              syncError={syncError}
+              syncMessage={syncMessage}
+              syncMode={syncMode}
+              lastSyncAt={lastSyncAt}
+              onApiBaseUrlChange={setApiBaseUrl}
+              onPullFromBackend={handlePullFromBackend}
+              onSyncModeChange={setSyncMode}
+              onSyncToBackend={handleSyncToBackend}
+              onTestConnection={handleTestConnection}
+            />
+          )}
         </main>
       </div>
     </div>
@@ -365,8 +668,8 @@ function OverviewPage({
         <p className="eyebrow">Welcome</p>
         <h3>CommunityPortal module starter</h3>
         <p>
-          The portal now includes functional modules for announcements, documents, and comments, with admin-only
-          publishing and moderation controls.
+          Announcements, documents, and comments are active now. Admin mode can publish and moderate while resident
+          mode presents community-facing views only.
         </p>
         <p className="helper-text">Current mode: {role === 'admin' ? 'Admin controls enabled' : 'Resident view'}</p>
       </section>
@@ -617,10 +920,32 @@ function AdminPage({
   announcements,
   documents,
   comments,
+  apiBaseUrl,
+  syncMode,
+  syncBusy,
+  syncMessage,
+  syncError,
+  lastSyncAt,
+  onApiBaseUrlChange,
+  onSyncModeChange,
+  onTestConnection,
+  onSyncToBackend,
+  onPullFromBackend,
 }: {
   announcements: Announcement[]
   documents: PortalDocument[]
   comments: CommentEntry[]
+  apiBaseUrl: string
+  syncMode: SyncMode
+  syncBusy: boolean
+  syncMessage: string
+  syncError: string
+  lastSyncAt: string | null
+  onApiBaseUrlChange: (value: string) => void
+  onSyncModeChange: (mode: SyncMode) => void
+  onTestConnection: () => Promise<void>
+  onSyncToBackend: () => Promise<void>
+  onPullFromBackend: () => Promise<void>
 }) {
   const boardOnlyCount = announcements.filter((announcement) => announcement.audience === 'board').length
   const pinnedCount = comments.filter((comment) => comment.pinned).length
@@ -649,13 +974,51 @@ function AdminPage({
           </div>
         </div>
       </article>
+
       <article className="card">
-        <h3>Next integration pass</h3>
-        <ol>
-          <li>Replace local arrays with API-backed data services.</li>
-          <li>Add authenticated resident and admin sessions.</li>
-          <li>Attach file upload + database persistence from covenant platform backend patterns.</li>
-        </ol>
+        <p className="eyebrow">Shared data sync</p>
+        <h3>Backend synchronization panel</h3>
+        <p className="helper-text">
+          Use a hosted API URL (or keep blank for same-origin). For local testing with the included API server, use
+          <code>http://localhost:8787</code>.
+        </p>
+        <div className="form-stack">
+          <label className="field">
+            <span>Database API base URL</span>
+            <input
+              onChange={(event) => onApiBaseUrlChange(event.target.value)}
+              placeholder="https://your-api-host.example.com"
+              value={apiBaseUrl}
+            />
+          </label>
+          <label className="field">
+            <span>Sync mode</span>
+            <select
+              onChange={(event) => onSyncModeChange(event.target.value as SyncMode)}
+              value={syncMode}
+            >
+              {SYNC_MODE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="sync-actions">
+            <button className="button secondary" disabled={syncBusy} onClick={() => void onTestConnection()} type="button">
+              Test connection
+            </button>
+            <button className="button" disabled={syncBusy} onClick={() => void onSyncToBackend()} type="button">
+              {syncBusy ? 'Working…' : 'Sync local data to backend'}
+            </button>
+            <button className="button secondary" disabled={syncBusy} onClick={() => void onPullFromBackend()} type="button">
+              {syncBusy ? 'Working…' : 'Load data from backend'}
+            </button>
+          </div>
+          {syncMessage && <p className="status-message success">{syncMessage}</p>}
+          {syncError && <p className="status-message error">{syncError}</p>}
+          {lastSyncAt && <p className="helper-text">Last sync action: {formatDateTime(lastSyncAt)}</p>}
+        </div>
       </article>
     </section>
   )
@@ -666,13 +1029,13 @@ function JoinPage() {
     <section className="card">
       <h3>Help shape CommunityPortal</h3>
       <p>
-        Early modules are now active. Next passes can focus on connecting this UI to the same shared persistence and
-        role controls used in the Community Covenant Platform.
+        The portal now has role-gated publishing modules plus backend sync hooks. Next passes can layer in resident
+        authentication and full PostgreSQL-powered persistence.
       </p>
       <ol>
-        <li>Prioritize launch-ready modules by resident impact.</li>
-        <li>Define moderation workflows for comments and announcements.</li>
-        <li>Plan migration path from template data to live production records.</li>
+        <li>Connect login sessions and role assignment to backend records.</li>
+        <li>Add attachment upload and document metadata management.</li>
+        <li>Implement audit history for moderation and content changes.</li>
       </ol>
     </section>
   )

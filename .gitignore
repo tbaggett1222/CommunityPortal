@@ -12,6 +12,7 @@ dist
 dist-ssr
 *.local
 _reference-community-covenants
+.portal-api-state.json
 
 # Editor directories and files
 .vscode/*
