@@ -40,12 +40,6 @@ function App() {
     return () => window.removeEventListener('resize', updateViewport)
   }, [])
 
-  useEffect(() => {
-    if (viewportWidth > MOBILE_BREAKPOINT_PX && mobileNavOpen) {
-      setMobileNavOpen(false)
-    }
-  }, [mobileNavOpen, viewportWidth])
-
   const isMobile = viewportWidth <= MOBILE_BREAKPOINT_PX
 
   const navigateTo = (nextPage: PageId) => {
