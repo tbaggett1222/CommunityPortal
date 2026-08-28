@@ -332,6 +332,7 @@ function App() {
           )}
           {effectivePage === 'comments' && (
             <CommentsPage
+              key={role}
               comments={sortedComments}
               onAddComment={handleAddComment}
               onDeleteComment={handleDeleteComment}
@@ -550,14 +551,8 @@ function CommentsPage({
   onTogglePinComment: (id: string) => void
   onDeleteComment: (id: string) => void
 }) {
-  const [author, setAuthor] = useState(role === 'admin' ? 'Board moderator' : '')
+  const [author, setAuthor] = useState(() => (role === 'admin' ? 'Board moderator' : ''))
   const [message, setMessage] = useState('')
-
-  useEffect(() => {
-    if (role === 'admin' && !author.trim()) {
-      setAuthor('Board moderator')
-    }
-  }, [author, role])
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
