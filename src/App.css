@@ -106,7 +106,7 @@
   border-bottom: 1px solid var(--color-border);
   padding: 14px 28px;
   display: flex;
-  gap: 12px;
+  gap: 16px;
   align-items: center;
   justify-content: space-between;
 }
@@ -121,15 +121,30 @@
 .topbar-left h2 {
   margin: 0;
   color: var(--color-sidebar);
-  font-family: Georgia, "Times New Roman", serif;
+  font-family: Georgia, 'Times New Roman', serif;
   font-size: 1.35rem;
 }
 
-.topbar-note {
-  margin: 0;
+.topbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.topbar-controls label {
   color: var(--color-muted);
-  font-size: 0.82rem;
-  text-align: right;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+}
+
+.topbar-controls select {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  background: #fff;
+  color: var(--color-text);
 }
 
 .menu-toggle {
@@ -156,14 +171,13 @@
   margin-bottom: 14px;
 }
 
-.hero-card h3,
 .card h3 {
   margin: 0 0 8px;
   color: var(--color-sidebar);
-  font-family: Georgia, "Times New Roman", serif;
+  font-family: Georgia, 'Times New Roman', serif;
 }
 
-.hero-card p {
+.card p {
   margin: 0;
 }
 
@@ -176,10 +190,20 @@
   font-weight: 700;
 }
 
+.helper-text {
+  margin-top: 10px !important;
+  color: var(--color-muted);
+  font-size: 0.85rem;
+}
+
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
+}
+
+.stat-grid.compact {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
 
 .stat-card {
@@ -190,7 +214,7 @@
 .stat-number {
   margin: 0;
   color: var(--color-sidebar);
-  font-family: Georgia, "Times New Roman", serif;
+  font-family: Georgia, 'Times New Roman', serif;
   font-size: 1.9rem;
   font-weight: 700;
 }
@@ -201,9 +225,127 @@
   font-size: 0.85rem;
 }
 
+.mini-stat {
+  background: #f8f7f4;
+  border: 1px solid #e7e5e4;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.mini-stat strong {
+  display: block;
+  color: var(--color-sidebar);
+  font-size: 1.35rem;
+  font-family: Georgia, 'Times New Roman', serif;
+}
+
+.mini-stat span {
+  display: block;
+  margin-top: 4px;
+  color: var(--color-muted);
+  font-size: 0.82rem;
+}
+
 .card-list .card:last-child,
 .portal-content > .card:last-child {
   margin-bottom: 0;
+}
+
+.row-between {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.inline-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.pill {
+  display: inline-flex;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.pill.soft {
+  background: #e7edf3;
+  color: #334155;
+}
+
+.pill.gold {
+  background: #f4ead8;
+  color: #785b24;
+}
+
+.form-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+.field span {
+  color: var(--color-muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+}
+
+.field input,
+.field select,
+.field textarea {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 1rem;
+  font-family: inherit;
+}
+
+.field textarea {
+  resize: vertical;
+}
+
+.button {
+  border: 1px solid transparent;
+  background: var(--color-sidebar);
+  color: #fff;
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.button.secondary {
+  background: #fff;
+  color: var(--color-sidebar);
+  border-color: var(--color-sidebar);
+}
+
+.button.danger {
+  background: #b91c1c;
+  color: #fff;
+}
+
+.button.inline {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  font-size: 0.8rem;
 }
 
 ol {
@@ -225,16 +367,15 @@ li + li {
     padding: 12px 14px;
   }
 
-  .topbar-note {
-    text-align: left;
-    width: 100%;
-  }
-
   .topbar-left h2 {
     font-size: 1.15rem;
   }
 
   .portal-content {
     padding: 16px 12px 24px;
+  }
+
+  .row-between {
+    flex-direction: column;
   }
 }
